@@ -6,7 +6,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::models::{
-    MemoryLayout, MemorySection, SectionType, Symbol, SymbolBinding, SymbolType, SymbolVisibility,
+    MemoryLayout, MemoryRegion, MemorySection, SectionType, Symbol, SymbolBinding, SymbolType,
+    SymbolVisibility,
 };
 
 /// Parser for ARM ELF binary files
@@ -34,9 +35,13 @@ impl ElfParser {
     /// Returns a `MemoryLayout` containing all sections with their addresses,
     /// sizes, and contained symbols.
     ///
+    /// # Arguments
+    ///
+    /// * `linker_regions` - Optional memory regions from linker script for accurate classification
+    ///
     /// # Errors
     /// Returns an error if the ELF format is invalid or cannot be parsed
-    pub fn parse(&self) -> Result<MemoryLayout> {
+    pub fn parse(&self, linker_regions: Option<&[MemoryRegion]>) -> Result<MemoryLayout> {
         let elf = Elf::parse(&self.bytes).context("Failed to parse ELF file")?;
 
         let mut layout = MemoryLayout::new();
@@ -49,7 +54,7 @@ impl ElfParser {
         }
 
         // Calculate totals
-        self.calculate_totals(&mut layout);
+        self.calculate_totals(&mut layout, linker_regions);
 
         Ok(layout)
     }
@@ -147,14 +152,19 @@ impl ElfParser {
     }
 
     fn parse_section(&self, elf: &Elf, header: &SectionHeader) -> Result<Option<MemorySection>> {
+        use goblin::elf::section_header::SHF_ALLOC;
+
         let name = elf
             .shdr_strtab
             .get_at(header.sh_name)
             .unwrap_or("")
             .to_string();
 
-        // Skip empty sections and non-allocatable sections
-        if header.sh_size == 0 || header.sh_addr == 0 {
+        // Skip empty sections, non-allocatable sections, and sections without SHF_ALLOC flag
+        // SHF_ALLOC means the section occupies memory during execution
+        // Sections without this flag (like NOLOAD sections) don't consume runtime memory
+        if header.sh_size == 0 || header.sh_addr == 0 || (header.sh_flags & (SHF_ALLOC as u64)) == 0
+        {
             return Ok(None);
         }
 
@@ -263,29 +273,63 @@ impl ElfParser {
         }
     }
 
-    fn calculate_totals(&self, layout: &mut MemoryLayout) {
+    fn calculate_totals(&self, layout: &mut MemoryLayout, linker_regions: Option<&[MemoryRegion]>) {
         let mut flash_used = 0u64;
         let mut ram_used = 0u64;
 
+        // Extract memory region ranges from linker script if provided
+        let (ram_regions, flash_regions) = if let Some(regions) = linker_regions {
+            let (ram, flash) = extract_memory_regions(regions);
+            // If linker script produced no usable regions (need BOTH RAM and Flash), fall back to auto-detect
+            if ram.is_empty() || flash.is_empty() {
+                detect_memory_regions_from_sections(&layout.sections)
+            } else {
+                (ram, flash)
+            }
+        } else {
+            // Auto-detect memory regions from section addresses
+            detect_memory_regions_from_sections(&layout.sections)
+        };
+
         for section in &layout.sections {
+            // Sections are already filtered by SHF_ALLOC flag in parse_section()
+            // so we only see sections that actually occupy runtime memory
+
             match section.section_type {
                 SectionType::Text | SectionType::RoData => {
+                    // Code and read-only data always go to Flash
                     flash_used += section.size;
                 }
                 SectionType::Data => {
-                    // .data takes space in both flash (initialization) and RAM
+                    // .data takes space in both flash (initialization data) and RAM (runtime copy)
                     flash_used += section.size;
-                    ram_used += section.size;
+                    // Only count in RAM if section is within defined RAM regions
+                    if is_in_regions(section.address, &ram_regions) {
+                        ram_used += section.size;
+                    }
                 }
                 SectionType::Bss | SectionType::Stack | SectionType::Heap => {
-                    ram_used += section.size;
-                }
-                SectionType::Custom(_) => {
-                    // For custom sections, assume RAM unless it looks like flash
-                    if section.name.contains("flash") || section.name.contains("rom") {
-                        flash_used += section.size;
-                    } else {
+                    // Uninitialized data, stack, and heap only consume RAM
+                    // Only count if section is within defined RAM regions
+                    if is_in_regions(section.address, &ram_regions) {
                         ram_used += section.size;
+                    }
+                }
+                SectionType::Custom(ref name) => {
+                    // For custom sections, classify by address and name hints
+                    // Skip vendor-specific non-volatile config sections
+                    if name.contains("uicr")       // Nordic User Information Configuration Registers
+                        || name.contains("ficr")    // Factory Information Configuration Registers
+                        || name.contains("bootloader")
+                    {
+                        continue;
+                    }
+
+                    // Classify by memory regions
+                    if is_in_regions(section.address, &ram_regions) {
+                        ram_used += section.size;
+                    } else if is_in_regions(section.address, &flash_regions) {
+                        flash_used += section.size;
                     }
                 }
             }
@@ -317,4 +361,155 @@ impl ElfParser {
             elf.syms.len()
         ))
     }
+}
+
+/// Memory address range (start, end)
+type MemoryRange = (u64, u64);
+
+/// Extract RAM and Flash memory regions from linker script regions
+///
+/// Returns (ram_regions, flash_regions) as vectors of (start, end) address ranges
+fn extract_memory_regions(regions: &[MemoryRegion]) -> (Vec<MemoryRange>, Vec<MemoryRange>) {
+    let mut ram_regions = Vec::new();
+    let mut flash_regions = Vec::new();
+
+    for region in regions {
+        let range = (region.origin, region.origin + region.length);
+
+        // Classify region by name and attributes
+        let name_lower = region.name.to_lowercase();
+
+        // RAM regions: contains "ram", "sram", "tcm", or has write attribute
+        if name_lower.contains("ram")
+            || name_lower.contains("sram")
+            || name_lower.contains("tcm")
+            || name_lower.contains("ccm")
+        {
+            // Only include regions that are intended for application use
+            // Exclude special-purpose regions by default
+            if !name_lower.contains("noinit")
+                && !name_lower.contains("spim")
+                && !name_lower.contains("dma")
+                && !name_lower.contains("shared")
+                && !name_lower.contains("bootloader")
+            {
+                ram_regions.push(range);
+            }
+        }
+        // Flash regions: contains "flash", "rom", or has execute attribute
+        else if name_lower.contains("flash")
+            || name_lower.contains("rom")
+            || name_lower.contains("text")
+            || region.attributes.contains('x')
+        {
+            // Exclude coredump and other special flash regions
+            if !name_lower.contains("coredump")
+                && !name_lower.contains("bootloader")
+                && !name_lower.contains("uicr")
+            {
+                flash_regions.push(range);
+            }
+        }
+    }
+
+    // If no regions classified by name, fall back to address-based classification
+    if ram_regions.is_empty() && flash_regions.is_empty() {
+        for region in regions {
+            let range = (region.origin, region.origin + region.length);
+
+            // ARM Cortex-M standard: RAM is 0x20000000-0x40000000
+            if region.origin >= 0x20000000 && region.origin < 0x40000000 {
+                ram_regions.push(range);
+            } else if region.origin < 0x20000000 {
+                flash_regions.push(range);
+            }
+        }
+    }
+
+    (ram_regions, flash_regions)
+}
+
+/// Check if an address is within any of the given memory regions
+fn is_in_regions(address: u64, regions: &[MemoryRange]) -> bool {
+    regions
+        .iter()
+        .any(|(start, end)| address >= *start && address < *end)
+}
+
+/// Auto-detect memory regions from actual section addresses
+///
+/// This finds the contiguous main application regions by:
+/// 1. Finding the lowest and highest Flash sections
+/// 2. Finding the main RAM region (largest contiguous block)
+///
+/// Returns (ram_regions, flash_regions)
+fn detect_memory_regions_from_sections(
+    sections: &[MemorySection],
+) -> (Vec<MemoryRange>, Vec<MemoryRange>) {
+    use crate::models::SectionType;
+
+    let mut flash_sections: Vec<(u64, u64)> = Vec::new();
+    let mut ram_sections: Vec<(u64, u64)> = Vec::new();
+
+    // Collect Flash and RAM section address ranges
+    // Also find the lowest address of main application sections (.data, .bss)
+    let mut app_ram_start = None;
+
+    for section in sections {
+        let range = (section.address, section.address + section.size);
+
+        match section.section_type {
+            SectionType::Text | SectionType::RoData => {
+                flash_sections.push(range);
+            }
+            SectionType::Data | SectionType::Bss | SectionType::Stack | SectionType::Heap => {
+                ram_sections.push(range);
+
+                // .data sections mark the start of application RAM
+                // (excludes special regions like NOINIT which are Bss type)
+                if matches!(section.section_type, SectionType::Data) {
+                    app_ram_start = Some(
+                        app_ram_start
+                            .map_or(section.address, |addr: u64| addr.min(section.address)),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Find Flash region: lowest to highest Flash section
+    let flash_region = if !flash_sections.is_empty() {
+        let min_addr = flash_sections
+            .iter()
+            .map(|(start, _)| *start)
+            .min()
+            .unwrap();
+        let max_addr = flash_sections.iter().map(|(_, end)| *end).max().unwrap();
+        vec![(min_addr, max_addr)]
+    } else {
+        vec![(0x00000000, 0x20000000)] // Fallback to ARM standard
+    };
+
+    // Find main RAM region
+    // If we found application RAM start (.data/.bss), use that as the lower bound
+    // Otherwise use the lowest RAM section
+    ram_sections.sort_by_key(|(start, _)| *start);
+
+    let ram_region = if !ram_sections.is_empty() {
+        let min_addr = if let Some(app_start) = app_ram_start {
+            // Use application RAM start, filtering out sections before it
+            app_start
+        } else {
+            // Fallback: use lowest RAM section
+            ram_sections.iter().map(|(start, _)| *start).min().unwrap()
+        };
+
+        let max_addr = ram_sections.iter().map(|(_, end)| *end).max().unwrap();
+        vec![(min_addr, max_addr)]
+    } else {
+        vec![(0x20000000, 0x40000000)] // Fallback to ARM standard
+    };
+
+    (ram_region, flash_region)
 }

@@ -5,6 +5,7 @@
 
 mod elf;
 mod export;
+mod linker;
 mod models;
 mod symbol;
 mod ui;
@@ -99,6 +100,10 @@ struct Args {
     /// Output file path for export (stdout if not specified)
     #[arg(long, value_name = "PATH", requires = "export")]
     output: Option<std::path::PathBuf>,
+
+    /// Path to linker script for accurate memory region definitions (optional)
+    #[arg(long, value_name = "LD_FILE")]
+    linker_script: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -113,13 +118,59 @@ fn main() -> Result<()> {
     println!("{}", "=".repeat(50).bright_cyan());
     println!();
 
+    // Parse linker script if provided
+    let linker_regions = if let Some(ref linker_path) = args.linker_script {
+        println!("Parsing linker script: {}", linker_path.display());
+        match linker::parse_linker_script(linker_path) {
+            Ok(regions) => {
+                println!("  Found {} memory regions", regions.len());
+
+                // Check if we found usable RAM/Flash regions
+                let has_ram = regions.iter().any(|r| {
+                    let name = r.name.to_lowercase();
+                    name.contains("ram") || name.contains("sram") || name.contains("tcm")
+                });
+                let has_flash = regions.iter().any(|r| {
+                    let name = r.name.to_lowercase();
+                    name.contains("flash") || name.contains("rom") || r.attributes.contains('x')
+                });
+
+                for region in &regions {
+                    println!(
+                        "    {} @ 0x{:08x} - 0x{:08x} ({}) [{}]",
+                        region.name,
+                        region.origin,
+                        region.origin + region.length,
+                        format_size_human(region.length),
+                        region.attributes
+                    );
+                }
+
+                if !has_ram && !has_flash {
+                    eprintln!("  Warning: No RAM or Flash regions found in linker script");
+                    eprintln!("  (Linker script may use variables that cannot be evaluated)");
+                    eprintln!("  Falling back to ARM Cortex-M standard memory map");
+                }
+
+                Some(regions)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to parse linker script: {}", e);
+                eprintln!("Falling back to ELF-only analysis");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Parse ELF file
     println!("Parsing ELF file: {}", args.elf_file.display());
     let parser = ElfParser::new(&args.elf_file)?;
 
     // Handle --top option (early exit, but need layout for RAM info)
     if let Some(n) = args.top {
-        let mut layout = parser.parse()?;
+        let mut layout = parser.parse(linker_regions.as_deref())?;
         layout.flash_size = args.flash_size;
         layout.ram_size = args.ram_size;
 
@@ -142,7 +193,7 @@ fn main() -> Result<()> {
         println!("\n{}", parser.get_elf_info()?);
     }
 
-    let mut layout = parser.parse()?;
+    let mut layout = parser.parse(linker_regions.as_deref())?;
 
     // Set memory sizes if provided
     layout.flash_size = args.flash_size;
