@@ -11,7 +11,9 @@ use ratatui::{
 
 use super::theme;
 use crate::elf::ElfParser;
-use crate::models::{AnalysisResult, MemoryLayout, Symbol, SymbolType};
+use crate::models::{
+    AnalysisResult, MemoryLayout, Symbol, SymbolType, VectorTable, VectorTableStats,
+};
 use crate::symbol::{FuzzyMatch, FuzzyMatcher};
 use crate::utils::{format_size_human, truncate};
 use std::collections::HashMap;
@@ -23,6 +25,7 @@ enum ViewTab {
     Files,
     Statistics,
     RegionExplorer,
+    VectorTable,
 }
 
 // Statistics data structure
@@ -72,6 +75,12 @@ pub struct App {
     region_zoom_level: u8,          // 0=overview, 1=section, 2=page, 3=detailed
     region_selected_symbol: usize,  // Index of selected symbol in address order
     symbols_by_address: Vec<usize>, // Symbol indices sorted by address
+    // Vector Table state
+    vector_table: Option<VectorTable>,
+    vector_stats: Option<VectorTableStats>,
+    selected_vector_index: usize,
+    vector_list_state: ListState,
+    vector_scroll: u16,
 }
 
 impl App {
@@ -121,6 +130,30 @@ impl App {
             .collect();
         symbols_by_address.sort_by(|&a, &b| all_symbols[a].address.cmp(&all_symbols[b].address));
 
+        // Parse vector table if present
+        use crate::vector::{VectorAnalyzer, VectorTableParser};
+        let vector_parser = VectorTableParser::new();
+        let vector_analyzer = VectorAnalyzer::new();
+
+        let (vector_table, vector_stats) = parser
+            .get_bytes()
+            .ok()
+            .and_then(|bytes| vector_parser.parse(bytes, &all_symbols).ok().flatten())
+            .map(|mut table| {
+                let stats = vector_analyzer.analyze(&mut table);
+                (Some(table), Some(stats))
+            })
+            .unwrap_or((None, None));
+
+        let mut vector_list_state = ListState::default();
+        if vector_table
+            .as_ref()
+            .map(|vt| !vt.entries.is_empty())
+            .unwrap_or(false)
+        {
+            vector_list_state.select(Some(0));
+        }
+
         Self {
             layout,
             analysis,
@@ -145,6 +178,11 @@ impl App {
             region_zoom_level: 0,
             region_selected_symbol: 0,
             symbols_by_address,
+            vector_table,
+            vector_stats,
+            selected_vector_index: 0,
+            vector_list_state,
+            vector_scroll: 0,
         }
     }
 
@@ -242,7 +280,8 @@ impl App {
                     | KeyCode::Char('2')
                     | KeyCode::Char('3')
                     | KeyCode::Char('4')
-                    | KeyCode::Char('5') => {
+                    | KeyCode::Char('5')
+                    | KeyCode::Char('6') => {
                         self.handle_tab_switch(key.code);
                     }
                     KeyCode::Down | KeyCode::Char('j') => match self.current_tab {
@@ -251,6 +290,7 @@ impl App {
                         ViewTab::Files => self.next_file(),
                         ViewTab::Statistics => {}
                         ViewTab::RegionExplorer => self.region_next_symbol(),
+                        ViewTab::VectorTable => self.next_vector(),
                     },
                     KeyCode::Up | KeyCode::Char('k') => match self.current_tab {
                         ViewTab::Memory => self.previous_section(),
@@ -258,6 +298,7 @@ impl App {
                         ViewTab::Files => self.previous_file(),
                         ViewTab::Statistics => {}
                         ViewTab::RegionExplorer => self.region_previous_symbol(),
+                        ViewTab::VectorTable => self.previous_vector(),
                     },
                     KeyCode::Char('z') if self.current_tab == ViewTab::RegionExplorer => {
                         self.region_zoom_in();
@@ -268,6 +309,8 @@ impl App {
                     KeyCode::PageDown => {
                         if self.current_tab == ViewTab::RegionExplorer {
                             self.region_scroll = self.region_scroll.saturating_add(5);
+                        } else if self.current_tab == ViewTab::VectorTable {
+                            self.vector_scroll = self.vector_scroll.saturating_add(5);
                         } else {
                             self.detail_scroll = self.detail_scroll.saturating_add(5);
                         }
@@ -275,6 +318,8 @@ impl App {
                     KeyCode::PageUp => {
                         if self.current_tab == ViewTab::RegionExplorer {
                             self.region_scroll = self.region_scroll.saturating_sub(5);
+                        } else if self.current_tab == ViewTab::VectorTable {
+                            self.vector_scroll = self.vector_scroll.saturating_sub(5);
                         } else {
                             self.detail_scroll = self.detail_scroll.saturating_sub(5);
                         }
@@ -328,12 +373,14 @@ impl App {
             KeyCode::Char('3') => ViewTab::Files,
             KeyCode::Char('4') => ViewTab::Statistics,
             KeyCode::Char('5') => ViewTab::RegionExplorer,
+            KeyCode::Char('6') => ViewTab::VectorTable,
             KeyCode::Tab => match self.current_tab {
                 ViewTab::Memory => ViewTab::Symbols,
                 ViewTab::Symbols => ViewTab::Files,
                 ViewTab::Files => ViewTab::Statistics,
                 ViewTab::Statistics => ViewTab::RegionExplorer,
-                ViewTab::RegionExplorer => ViewTab::Memory,
+                ViewTab::RegionExplorer => ViewTab::VectorTable,
+                ViewTab::VectorTable => ViewTab::Memory,
             },
             _ => self.current_tab,
         };
@@ -431,6 +478,32 @@ impl App {
             self.selected_file_index -= 1;
         }
         self.file_list_state.select(Some(self.selected_file_index));
+    }
+
+    fn next_vector(&mut self) {
+        if let Some(ref vt) = self.vector_table {
+            if vt.entries.is_empty() {
+                return;
+            }
+            self.selected_vector_index = (self.selected_vector_index + 1) % vt.entries.len();
+            self.vector_list_state
+                .select(Some(self.selected_vector_index));
+        }
+    }
+
+    fn previous_vector(&mut self) {
+        if let Some(ref vt) = self.vector_table {
+            if vt.entries.is_empty() {
+                return;
+            }
+            if self.selected_vector_index == 0 {
+                self.selected_vector_index = vt.entries.len() - 1;
+            } else {
+                self.selected_vector_index -= 1;
+            }
+            self.vector_list_state
+                .select(Some(self.selected_vector_index));
+        }
     }
 
     fn region_next_symbol(&mut self) {
@@ -698,57 +771,87 @@ impl App {
                 self.render_region_explorer(f, chunks[1]);
                 self.render_footer(f, chunks[2]);
             }
+            ViewTab::VectorTable => {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3), // Title
+                        Constraint::Min(10),   // Main content
+                        Constraint::Length(3), // Footer
+                    ])
+                    .split(f.area());
+
+                self.render_title(f, chunks[0]);
+                self.render_vector_table(f, chunks[1]);
+                self.render_footer(f, chunks[2]);
+            }
         }
     }
 
     fn render_title(&self, f: &mut Frame, area: Rect) {
-        let (tab1_style, tab2_style, tab3_style, tab4_style, tab5_style) = match self.current_tab {
-            ViewTab::Memory => (
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-            ),
-            ViewTab::Symbols => (
-                Style::default().fg(Color::Gray),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-            ),
-            ViewTab::Files => (
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-            ),
-            ViewTab::Statistics => (
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                Style::default().fg(Color::Gray),
-            ),
-            ViewTab::RegionExplorer => (
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default().fg(Color::Gray),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            ),
-        };
+        let (tab1_style, tab2_style, tab3_style, tab4_style, tab5_style, tab6_style) =
+            match self.current_tab {
+                ViewTab::Memory => (
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                ),
+                ViewTab::Symbols => (
+                    Style::default().fg(Color::Gray),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                ),
+                ViewTab::Files => (
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                ),
+                ViewTab::Statistics => (
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                ),
+                ViewTab::RegionExplorer => (
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    Style::default().fg(Color::Gray),
+                ),
+                ViewTab::VectorTable => (
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Gray),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                ),
+            };
 
         let title = Line::from(vec![
             Span::styled("[1] Memory", tab1_style),
@@ -760,6 +863,8 @@ impl App {
             Span::styled("[4] Statistics", tab4_style),
             Span::raw("  |  "),
             Span::styled("[5] Region Explorer", tab5_style),
+            Span::raw("  |  "),
+            Span::styled("[6] Vector Table", tab6_style),
         ]);
 
         let title_widget = Paragraph::new(title)
@@ -865,6 +970,7 @@ impl App {
                     }
                     ViewTab::Statistics => unreachable!(),
                     ViewTab::RegionExplorer => unreachable!(),
+                    ViewTab::VectorTable => unreachable!(),
                 }
             }
         }
@@ -2072,14 +2178,17 @@ impl App {
         } else {
             match self.current_tab {
                 ViewTab::Memory => {
-                    "1/2/3/4/5 or Tab: Switch tabs | ↑/↓: Navigate | PgUp/PgDn: Scroll | h/?: Help | q/Esc: Quit"
+                    "1-6 or Tab: Switch tabs | ↑/↓: Navigate | PgUp/PgDn: Scroll | h/?: Help | q/Esc: Quit"
                 }
                 ViewTab::Symbols | ViewTab::Files => {
-                    "1/2/3/4/5 or Tab: Switch tabs | Type to search | ↑/↓: Navigate | Esc: Clear | h/?: Help | q: Quit"
+                    "1-6 or Tab: Switch tabs | Type to search | ↑/↓: Navigate | Esc: Clear | h/?: Help | q: Quit"
                 }
-                ViewTab::Statistics => "1/2/3/4/5 or Tab: Switch tabs | h/?: Help | q/Esc: Quit",
+                ViewTab::Statistics => "1-6 or Tab: Switch tabs | h/?: Help | q/Esc: Quit",
                 ViewTab::RegionExplorer => {
-                    "1/2/3/4/5 or Tab: Switch tabs | ↑/↓: Navigate symbols | z/Z: Zoom in/out | PgUp/PgDn: Scroll | h/?: Help | q/Esc: Quit"
+                    "1-6 or Tab: Switch tabs | ↑/↓: Navigate symbols | z/Z: Zoom in/out | PgUp/PgDn: Scroll | h/?: Help | q/Esc: Quit"
+                }
+                ViewTab::VectorTable => {
+                    "1-6 or Tab: Switch tabs | ↑/↓: Navigate vectors | PgUp/PgDn: Scroll details | h/?: Help | q/Esc: Quit"
                 }
             }
         };
@@ -2178,6 +2287,278 @@ impl App {
         let area = centered_rect(60, 80, f.area());
         f.render_widget(ratatui::widgets::Clear, area);
         f.render_widget(help, area);
+    }
+
+    fn render_vector_table(&mut self, f: &mut Frame, area: Rect) {
+        // Check if vector table exists
+        if self.vector_table.is_none() {
+            let text = Paragraph::new("No vector table found in this binary.\n\nVector tables are typically found in ARM Cortex-M binaries in sections like .isr_vector or .vectors")
+                .block(Block::default().borders(Borders::ALL).title("Vector Table"))
+                .wrap(Wrap { trim: true });
+            f.render_widget(text, area);
+            return;
+        }
+
+        // Split into left (vector list) and right (details + stats)
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        // Render vector list
+        self.render_vector_list(f, chunks[0]);
+
+        // Render details and stats
+        self.render_vector_details(f, chunks[1]);
+    }
+
+    fn render_vector_list(&mut self, f: &mut Frame, area: Rect) {
+        use crate::models::{VectorEntryType, VectorStatus};
+
+        let vector_table = self.vector_table.as_ref().unwrap();
+
+        let items: Vec<ListItem> = vector_table
+            .entries
+            .iter()
+            .map(|entry| {
+                // Choose color based on status
+                let color = match &entry.status {
+                    VectorStatus::Implemented => Color::Green,
+                    VectorStatus::DefaultHandler => Color::Yellow,
+                    VectorStatus::Shared(_) => Color::Cyan,
+                    VectorStatus::Invalid => Color::Red,
+                    VectorStatus::Unassigned => Color::Gray,
+                };
+
+                // Format the entry
+                let content = if entry.entry_type == VectorEntryType::StackPointer {
+                    format!("Stack: 0x{:08x}", entry.handler_address)
+                } else {
+                    let handler = entry.handler_name.as_deref().unwrap_or("<unnamed>");
+                    format!("IRQ {:>3}: {:<20}", entry.irq_number, truncate(handler, 20))
+                };
+
+                ListItem::new(content).style(Style::default().fg(color))
+            })
+            .collect();
+
+        let title = if let Some(ref mcu) = vector_table.mcu_family {
+            format!("Vectors ({}) - {}", vector_table.entries.len(), mcu)
+        } else {
+            format!("Vectors ({})", vector_table.entries.len())
+        };
+
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
+
+        f.render_stateful_widget(list, area, &mut self.vector_list_state);
+    }
+
+    fn render_vector_details(&self, f: &mut Frame, area: Rect) {
+        use crate::models::{VectorEntryType, VectorStatus};
+
+        let vector_table = self.vector_table.as_ref().unwrap();
+
+        // Split into top (stats) and bottom (entry details)
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area);
+
+        // Render stats
+        if let Some(ref stats) = self.vector_stats {
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    "Vector Table Statistics",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(format!("Total Vectors:       {}", stats.total_vectors)),
+                Line::from(vec![
+                    Span::raw("Custom Handlers:     "),
+                    Span::styled(
+                        format!("{}", stats.custom_handlers),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::raw(format!(
+                        " ({:.1}%)",
+                        (stats.custom_handlers as f64 / stats.total_vectors as f64) * 100.0
+                    )),
+                ]),
+                Line::from(vec![
+                    Span::raw("Default Handlers:    "),
+                    Span::styled(
+                        format!("{}", stats.default_handlers),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(format!(
+                        " ({:.1}%)",
+                        (stats.default_handlers as f64 / stats.total_vectors as f64) * 100.0
+                    )),
+                ]),
+                Line::from(vec![
+                    Span::raw("Shared Handlers:     "),
+                    Span::styled(
+                        format!("{}", stats.shared_handlers),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::raw("Invalid Handlers:    "),
+                    Span::styled(
+                        format!("{}", stats.invalid_handlers),
+                        Style::default().fg(Color::Red),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(format!(
+                    "Table Size:          {} bytes",
+                    vector_table.table_size
+                )),
+                Line::from(format!(
+                    "Base Address:        0x{:08x}",
+                    vector_table.base_address
+                )),
+            ];
+
+            if !stats.warnings.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("⚠ {} Warnings", stats.warnings.len()),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )));
+            }
+
+            let paragraph = Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title("Statistics"))
+                .wrap(Wrap { trim: true });
+            f.render_widget(paragraph, chunks[0]);
+        }
+
+        // Render selected entry details
+        if self.selected_vector_index < vector_table.entries.len() {
+            let entry = &vector_table.entries[self.selected_vector_index];
+
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    &entry.description,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+            ];
+
+            if entry.entry_type == VectorEntryType::StackPointer {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "Initial SP: ",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("0x{:08x}", entry.handler_address)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "IRQ Number: ",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("{}", entry.irq_number)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "Vector Offset: ",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("0x{:03x}", entry.offset)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "Handler Address: ",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("0x{:08x}", entry.handler_address)),
+                ]));
+
+                if let Some(ref name) = entry.handler_name {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "Handler Name: ",
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(name),
+                    ]));
+                }
+
+                if entry.handler_size > 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "Handler Size: ",
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(format!("{} bytes", entry.handler_size)),
+                    ]));
+                }
+
+                lines.push(Line::from(""));
+                let (status_text, status_color) = match &entry.status {
+                    VectorStatus::Implemented => ("✓ Custom Implementation", Color::Green),
+                    VectorStatus::DefaultHandler => ("⚠ Default Handler (stub)", Color::Yellow),
+                    VectorStatus::Shared(primary) => {
+                        lines.push(Line::from(vec![
+                            Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
+                            Span::styled("⇄ Shared Handler", Style::default().fg(Color::Cyan)),
+                        ]));
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "Shares with: ",
+                                Style::default().add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(primary),
+                        ]));
+                        ("", Color::White)
+                    }
+                    VectorStatus::Invalid => ("✗ Invalid/NULL Handler", Color::Red),
+                    VectorStatus::Unassigned => ("○ Unassigned", Color::Gray),
+                };
+
+                if !status_text.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
+                        Span::styled(status_text, Style::default().fg(status_color)),
+                    ]));
+                }
+
+                // Show type
+                let type_str = match entry.entry_type {
+                    VectorEntryType::CoreException => "ARM Core Exception",
+                    VectorEntryType::DeviceIRQ => "Device IRQ",
+                    _ => "Other",
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("Type: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(type_str),
+                ]));
+            }
+
+            let paragraph = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Vector Details"),
+                )
+                .wrap(Wrap { trim: true })
+                .scroll((self.vector_scroll, 0));
+            f.render_widget(paragraph, chunks[1]);
+        }
     }
 }
 

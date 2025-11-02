@@ -10,6 +10,7 @@ mod models;
 mod symbol;
 mod ui;
 mod utils;
+mod vector;
 
 use anyhow::Result;
 use clap::Parser;

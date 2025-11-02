@@ -223,3 +223,93 @@ impl Default for MemoryLayout {
         Self::new()
     }
 }
+
+/// ARM Cortex-M Vector Table representation
+#[derive(Debug, Clone)]
+pub struct VectorTable {
+    /// Base address of vector table (usually 0x00000000)
+    pub base_address: u64,
+    /// Initial stack pointer value (first entry)
+    #[allow(dead_code)]
+    pub initial_stack_pointer: u64,
+    /// All vector entries
+    pub entries: Vec<VectorEntry>,
+    /// Total table size in bytes
+    pub table_size: u64,
+    /// Detected MCU family (if identifiable)
+    pub mcu_family: Option<String>,
+}
+
+/// Single entry in the vector table
+#[derive(Debug, Clone)]
+pub struct VectorEntry {
+    /// Offset from vector table base
+    pub offset: u64,
+    /// IRQ number (negative for exceptions, positive for device IRQs)
+    pub irq_number: i16,
+    /// Handler function address
+    pub handler_address: u64,
+    /// Handler function name (resolved from symbols)
+    pub handler_name: Option<String>,
+    /// Handler function size (from symbols)
+    pub handler_size: u64,
+    /// Entry classification
+    pub entry_type: VectorEntryType,
+    /// Entry status
+    pub status: VectorStatus,
+    /// Human-readable description
+    pub description: String,
+}
+
+/// Vector entry type classification
+#[derive(Debug, Clone, PartialEq)]
+pub enum VectorEntryType {
+    /// Initial stack pointer
+    StackPointer,
+    /// ARM core exception (NMI, HardFault, etc.)
+    CoreException,
+    /// Device-specific interrupt
+    DeviceIRQ,
+    /// Reserved/unused slot
+    #[allow(dead_code)]
+    Reserved,
+}
+
+/// Vector handler implementation status
+#[derive(Debug, Clone, PartialEq)]
+pub enum VectorStatus {
+    /// Custom handler implemented
+    Implemented,
+    /// Uses default/weak handler stub
+    DefaultHandler,
+    /// Shared with another vector (alias)
+    #[allow(dead_code)]
+    Shared(String), // Name of the primary handler
+    /// NULL or invalid pointer
+    Invalid,
+    /// Not assigned
+    Unassigned,
+}
+
+/// Statistics about vector table usage
+#[derive(Debug, Clone)]
+pub struct VectorTableStats {
+    /// Total number of vectors
+    pub total_vectors: usize,
+    /// Custom-implemented handlers
+    pub custom_handlers: usize,
+    /// Default/weak handlers
+    pub default_handlers: usize,
+    /// Shared handlers (aliases)
+    pub shared_handlers: usize,
+    /// Invalid/NULL handlers
+    pub invalid_handlers: usize,
+    /// Unassigned handlers
+    pub unassigned_handlers: usize,
+    /// ARM core exceptions count
+    pub core_exceptions: usize,
+    /// Device-specific IRQs count
+    pub device_irqs: usize,
+    /// Warnings about vector table issues
+    pub warnings: Vec<String>,
+}

@@ -361,6 +361,14 @@ impl ElfParser {
             elf.syms.len()
         ))
     }
+
+    /// Get raw ELF bytes for vector table parsing
+    ///
+    /// # Returns
+    /// Returns a reference to the raw ELF binary data
+    pub fn get_bytes(&self) -> Result<&[u8]> {
+        Ok(&self.bytes)
+    }
 }
 
 /// Memory address range (start, end)
