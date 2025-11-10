@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v0.1.0, v1.2.3, etc.
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-musl-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build static release binary
+        run: cargo build --release --target x86_64-unknown-linux-musl --verbose
+        env:
+          RUSTFLAGS: '-C target-feature=+crt-static'
+
+      - name: Strip binary
+        run: strip target/x86_64-unknown-linux-musl/release/memscope
+
+      - name: Prepare release artifacts
+        run: |
+          mkdir -p release
+          cp target/x86_64-unknown-linux-musl/release/memscope release/memscope-x86_64-linux
+          chmod +x release/memscope-x86_64-linux
+          cd release
+          tar -czf memscope-x86_64-linux.tar.gz memscope-x86_64-linux
+          cd ..
+          cp README.md release/
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: MemScope ${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: false
+          body: |
+            ## MemScope ${{ steps.get_version.outputs.version }}
+
+            Interactive Memory Layout Visualizer for ARM Embedded Systems
+
+            ### Installation
+
+            Download and extract the binary:
+
+            ```bash
+            tar -xzf memscope-x86_64-linux.tar.gz
+            chmod +x memscope-x86_64-linux
+            ```
+
+            ### Usage
+
+            ```bash
+            ./memscope-x86_64-linux firmware.elf
+            ./memscope-x86_64-linux firmware.elf --no-tui
+            ./memscope-x86_64-linux firmware.elf --export json --output report.json
+            ```
+
+            For more information, see the [README](https://github.com/jjungo/memscope#readme).
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./release/memscope-x86_64-linux.tar.gz
+          asset_name: memscope-x86_64-linux.tar.gz
+          asset_content_type: application/gzip

@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 keywords = ["embedded", "arm", "elf", "memory", "analysis"]
 categories = ["command-line-utilities", "development-tools", "embedded"]
 authors = ["Joël Jungo <j.jungo@gmail.com>"]
+publish = false
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
