@@ -240,7 +240,7 @@ mod tests {
     fn test_irq_numbering() {
         // Reset handler is at offset 0x04 (index 1)
         // IRQ number should be 1 - 16 = -15
-        let irq = (1 as i16) - 16;
+        let irq = 1_i16 - 16;
         assert_eq!(irq, -15);
     }
 }
