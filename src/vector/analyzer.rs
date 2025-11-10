@@ -300,7 +300,7 @@ impl VectorAnalyzer {
         output.push_str(&format!("Device IRQs:         {}\n", stats.device_irqs));
 
         if !stats.warnings.is_empty() {
-            output.push_str("\nWarnings:\n");
+            output.push_str("Warnings:\n");
             for warning in &stats.warnings {
                 output.push_str(&format!("  - {}\n", warning));
             }

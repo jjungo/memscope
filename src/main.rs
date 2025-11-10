@@ -24,6 +24,7 @@ use std::io;
 use std::path::PathBuf;
 
 use elf::{ElfParser, MemoryAnalyzer};
+use log::{LevelFilter, info, warn};
 use models::{MemoryLayout, SectionType};
 use ui::App;
 use utils::{format_size_human, round_to_common_size};
@@ -105,26 +106,55 @@ struct Args {
     /// Path to linker script for accurate memory region definitions (optional)
     #[arg(long, value_name = "LD_FILE")]
     linker_script: Option<PathBuf>,
+
+    /// Quiet mode (no output)
+    #[arg(short, long)]
+    quiet: bool,
+}
+
+fn log_formatter(buf: &mut env_logger::fmt::Formatter, record: &log::Record) -> io::Result<()> {
+    use colored::Colorize;
+    use std::io::Write;
+
+    let formatted_level = match record.level() {
+        log::Level::Error => format!("[{}]", "E").red().bold().to_string(),
+        log::Level::Warn => format!("[{}]", "W").yellow().bold().to_string(),
+        log::Level::Info => format!("[{}]", "I").green().to_string(),
+        log::Level::Debug => format!("[{}]", "D").blue().to_string(),
+        log::Level::Trace => format!("[{}]", "T").magenta().to_string(),
+    };
+
+    writeln!(buf, "{} {}", formatted_level, record.args())
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!(
+    let log_level = if args.quiet {
+        LevelFilter::Off
+    } else {
+        LevelFilter::Info
+    };
+    env_logger::Builder::new()
+        .filter_level(log_level)
+        .format(log_formatter)
+        .init();
+
+    info!(
         "{}",
         "MemScope - ARM Memory Layout Visualizer"
             .bright_cyan()
             .bold()
     );
-    println!("{}", "=".repeat(50).bright_cyan());
-    println!();
+    info!("{}", "=".repeat(50).bright_cyan());
+    info!("");
 
     // Parse linker script if provided
     let linker_regions = if let Some(ref linker_path) = args.linker_script {
-        println!("Parsing linker script: {}", linker_path.display());
+        info!("Parsing linker script: {}", linker_path.display());
         match linker::parse_linker_script(linker_path) {
             Ok(regions) => {
-                println!("  Found {} memory regions", regions.len());
+                info!("  Found {} memory regions", regions.len());
 
                 // Check if we found usable RAM/Flash regions
                 let has_ram = regions.iter().any(|r| {
@@ -137,7 +167,7 @@ fn main() -> Result<()> {
                 });
 
                 for region in &regions {
-                    println!(
+                    info!(
                         "    {} @ 0x{:08x} - 0x{:08x} ({}) [{}]",
                         region.name,
                         region.origin,
@@ -148,16 +178,16 @@ fn main() -> Result<()> {
                 }
 
                 if !has_ram && !has_flash {
-                    eprintln!("  Warning: No RAM or Flash regions found in linker script");
-                    eprintln!("  (Linker script may use variables that cannot be evaluated)");
-                    eprintln!("  Falling back to ARM Cortex-M standard memory map");
+                    warn!("  Warning: No RAM or Flash regions found in linker script");
+                    warn!("  (Linker script may use variables that cannot be evaluated)");
+                    warn!("  Falling back to ARM Cortex-M standard memory map");
                 }
 
                 Some(regions)
             }
             Err(e) => {
-                eprintln!("Warning: Failed to parse linker script: {}", e);
-                eprintln!("Falling back to ELF-only analysis");
+                warn!("Warning: Failed to parse linker script: {}", e);
+                warn!("Falling back to ELF-only analysis");
                 None
             }
         }
@@ -166,7 +196,7 @@ fn main() -> Result<()> {
     };
 
     // Parse ELF file
-    println!("Parsing ELF file: {}", args.elf_file.display());
+    info!("Parsing ELF file: {}", args.elf_file.display());
     let parser = ElfParser::new(&args.elf_file)?;
 
     // Handle --top option (early exit, but need layout for RAM info)
@@ -191,7 +221,7 @@ fn main() -> Result<()> {
     }
 
     if args.detailed {
-        println!("\n{}", parser.get_elf_info()?);
+        info!("\n{}", parser.get_elf_info()?);
     }
 
     let mut layout = parser.parse(linker_regions.as_deref())?;
@@ -212,16 +242,17 @@ fn main() -> Result<()> {
     }
 
     // Display sections
-    println!("\n{}", "Memory Sections:".bright_yellow().bold());
-    println!("{}", "-".repeat(80).bright_black());
-    println!(
+    info!("");
+    info!("{}", "Memory Sections:".bright_yellow().bold());
+    info!("{}", "-".repeat(80).bright_black());
+    info!(
         "{:<20} {:<12} {:<12} {:<10}",
         "Section".bold(),
         "Address".bold(),
         "Size".bold(),
         "Type".bold()
     );
-    println!("{}", "-".repeat(80).bright_black());
+    info!("{}", "-".repeat(80).bright_black());
 
     for section in &layout.sections {
         let type_str = format!("{:?}", section.section_type);
@@ -235,14 +266,14 @@ fn main() -> Result<()> {
             SectionType::Custom(_) => type_str.white(),
         };
 
-        println!(
+        info!(
             "{:<20} 0x{:08x}   {:>8} B  {}",
             section.name, section.address, section.size, colored_type
         );
 
         if args.detailed && !section.symbols.is_empty() {
             for symbol in &section.symbols {
-                println!(
+                info!(
                     "  └─ {} @ 0x{:08x} ({} B)",
                     symbol.name.dimmed(),
                     symbol.address,
@@ -252,41 +283,41 @@ fn main() -> Result<()> {
         }
     }
 
-    println!();
+    info!("");
 
     // Display summary
-    println!("{}", "Memory Summary:".bright_yellow().bold());
-    println!("{}", "-".repeat(80).bright_black());
+    info!("{}", "Memory Summary:".bright_yellow().bold());
+    info!("{}", "-".repeat(80).bright_black());
 
     // Flash usage
-    print!(
+    let mut flash_msg = format!(
         "Total Flash used: {} bytes (0x{:x}) / {:.2} KB",
         layout.total_flash_used,
         layout.total_flash_used,
         layout.total_flash_used as f64 / 1024.0
     );
     if let Some(percentage) = layout.flash_percentage() {
-        print!(" [{:.1}%]", percentage);
+        flash_msg.push_str(&format!(" [{:.1}%]", percentage));
         if let Some(size) = layout.flash_size {
-            print!(" of {:.2} KB", size as f64 / 1024.0);
+            flash_msg.push_str(&format!(" of {:.2} KB", size as f64 / 1024.0));
         }
     }
-    println!();
+    info!("{}", flash_msg);
 
     // RAM usage
-    print!(
+    let mut ram_msg = format!(
         "Total RAM used:   {} bytes (0x{:x}) / {:.2} KB",
         layout.total_ram_used,
         layout.total_ram_used,
         layout.total_ram_used as f64 / 1024.0
     );
     if let Some(percentage) = layout.ram_percentage() {
-        print!(" [{:.1}%]", percentage);
+        ram_msg.push_str(&format!(" [{:.1}%]", percentage));
         if let Some(size) = layout.ram_size {
-            print!(" of {:.2} KB", size as f64 / 1024.0);
+            ram_msg.push_str(&format!(" of {:.2} KB", size as f64 / 1024.0));
         }
     }
-    println!();
+    info!("{}", ram_msg);
 
     // Run analyzer
     let analyzer = MemoryAnalyzer::new();
@@ -311,7 +342,7 @@ fn main() -> Result<()> {
                 &args.elf_file,
                 output_path,
             )?;
-            println!("✓ Exported to: {}", output_path.display());
+            info!("✓ Exported to: {}", output_path.display());
         } else {
             // Export to stdout
             let output =
@@ -325,7 +356,7 @@ fn main() -> Result<()> {
     // Choose display mode
     if args.no_tui {
         // Text-based output
-        println!();
+        info!("");
         display_analysis(&analysis);
     } else {
         // Interactive TUI with integrated symbol/file views
@@ -361,19 +392,19 @@ fn run_tui(
 
 /// Display top N symbols by size with source file information
 fn display_top_symbols(parser: &ElfParser, n: usize, ram_size: Option<u64>) -> Result<()> {
-    println!(
-        "\n{}",
+    info!(
+        "{}",
         format!("Top {} Symbols by Size", n).bright_yellow().bold()
     );
-    println!("{}", "-".repeat(100).bright_black());
-    println!(
+    info!("{}", "-".repeat(100).bright_black());
+    info!(
         "{:<40} {:<12} {:<14} {:<20}",
         "Symbol".bold(),
         "Size".bold(),
         "Address".bold(),
         "Source File".bold()
     );
-    println!("{}", "-".repeat(100).bright_black());
+    info!("{}", "-".repeat(100).bright_black());
 
     // Parse all symbols
     let mut symbols = parser.parse_all_symbols()?;
@@ -391,7 +422,7 @@ fn display_top_symbols(parser: &ElfParser, n: usize, ram_size: Option<u64>) -> R
 
         let source_file = symbol.source_file.as_deref().unwrap_or("UNKNOWN");
 
-        println!(
+        info!(
             "{:<40} {:>10}  0x{:08x}     {:<20}",
             if symbol.name.len() > 40 {
                 format!("{}...", &symbol.name[..37])
@@ -405,11 +436,11 @@ fn display_top_symbols(parser: &ElfParser, n: usize, ram_size: Option<u64>) -> R
     }
 
     // Display totals
-    println!("{}", "-".repeat(100).bright_black());
+    info!("{}", "-".repeat(100).bright_black());
 
     let total_human = format_size_human(total_size);
 
-    println!(
+    info!(
         "{:<40} {:>10}",
         "Total:".bold(),
         total_human.bright_cyan().bold()
@@ -426,7 +457,7 @@ fn display_top_symbols(parser: &ElfParser, n: usize, ram_size: Option<u64>) -> R
             format!("{:.2}%", ram_percentage).bright_green()
         };
 
-        println!(
+        info!(
             "{:<40} {} of {} total",
             "RAM Usage:".bold(),
             percentage_colored.bold(),
@@ -434,7 +465,7 @@ fn display_top_symbols(parser: &ElfParser, n: usize, ram_size: Option<u64>) -> R
         );
     }
 
-    println!();
+    info!("");
     Ok(())
 }
 
@@ -442,21 +473,21 @@ fn display_top_symbols(parser: &ElfParser, n: usize, ram_size: Option<u64>) -> R
 fn display_analysis(analysis: &crate::models::AnalysisResult) {
     use colored::*;
 
-    println!("{}", "Memory Analysis:".bright_yellow().bold());
-    println!("{}", "-".repeat(80).bright_black());
+    info!("{}", "Memory Analysis:".bright_yellow().bold());
+    info!("{}", "-".repeat(80).bright_black());
 
     // Display warnings first (most important)
     if !analysis.warnings.is_empty() {
-        println!("\n{}", "Warnings:".bright_red().bold());
+        info!("{}", "Warnings:".bright_red().bold());
         for warning in &analysis.warnings {
-            println!("  {}", warning.bright_red());
+            info!("  {}", warning.bright_red());
         }
-        println!();
+        info!("");
     }
 
     // Display gaps
     if !analysis.gaps.is_empty() {
-        println!("{}", "Memory Gaps (unused regions):".bright_cyan());
+        info!("{}", "Memory Gaps (unused regions):".bright_cyan());
         let mut flash_gaps = 0;
         let mut ram_gaps = 0;
         let mut flash_gap_size = 0u64;
@@ -475,7 +506,7 @@ fn display_analysis(analysis: &crate::models::AnalysisResult) {
                 _ => {}
             }
 
-            println!(
+            info!(
                 "  {:?}: 0x{:08x} - 0x{:08x} ({} bytes / {:.2} KB)",
                 gap.region_type,
                 gap.start,
@@ -485,9 +516,9 @@ fn display_analysis(analysis: &crate::models::AnalysisResult) {
             );
         }
 
-        println!();
+        info!("");
         if flash_gaps > 0 {
-            println!(
+            info!(
                 "  Flash: {} gaps totaling {} bytes ({:.2} KB)",
                 flash_gaps,
                 flash_gap_size,
@@ -495,16 +526,16 @@ fn display_analysis(analysis: &crate::models::AnalysisResult) {
             );
         }
         if ram_gaps > 0 {
-            println!(
+            info!(
                 "  RAM: {} gaps totaling {} bytes ({:.2} KB)",
                 ram_gaps,
                 ram_gap_size,
                 ram_gap_size as f64 / 1024.0
             );
         }
-        println!();
+        info!("");
     } else {
-        println!(
+        info!(
             "  {} No memory gaps detected (sections are contiguous)",
             "✓".green()
         );
@@ -512,9 +543,9 @@ fn display_analysis(analysis: &crate::models::AnalysisResult) {
 
     // Display overlaps
     if !analysis.overlaps.is_empty() {
-        println!("\n{}", "Memory Overlaps:".bright_red().bold());
+        info!("\n{}", "Memory Overlaps:".bright_red().bold());
         for overlap in &analysis.overlaps {
-            println!(
+            info!(
                 "  {} ⚠ {} overlaps with {} at 0x{:08x}-0x{:08x} ({} bytes)",
                 "ERROR:".bright_red().bold(),
                 overlap.section1.bright_yellow(),
@@ -524,18 +555,18 @@ fn display_analysis(analysis: &crate::models::AnalysisResult) {
                 overlap.overlap_size
             );
         }
-        println!();
+        info!("");
     }
 
     // Display padding
     if analysis.total_padding > 0 {
-        println!(
+        info!(
             "Alignment Padding: {} bytes ({:.2} KB)",
             analysis.total_padding,
             analysis.total_padding as f64 / 1024.0
         );
     } else {
-        println!("Alignment Padding: None detected");
+        info!("Alignment Padding: None detected");
     }
 
     // Display stack/heap gap
@@ -550,13 +581,13 @@ fn display_analysis(analysis: &crate::models::AnalysisResult) {
             "OK".green()
         };
 
-        println!(
+        info!(
             "Stack/Heap Gap: {} bytes ({:.2} KB) [{}]",
             gap,
             gap as f64 / 1024.0,
             status
         );
     } else {
-        println!("Stack/Heap Gap: Not detected (no stack or heap sections found)");
+        info!("Stack/Heap Gap: Not detected (no stack or heap sections found)");
     }
 }

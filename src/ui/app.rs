@@ -16,6 +16,7 @@ use crate::models::{
 };
 use crate::symbol::{FuzzyMatch, FuzzyMatcher};
 use crate::utils::{format_size_human, truncate};
+use log::warn;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +93,7 @@ impl App {
 
         // Extract all symbols from ELF
         let mut all_symbols = parser.parse_all_symbols().unwrap_or_else(|e| {
-            eprintln!("Warning: Failed to parse symbols: {}", e);
+            warn!("Warning: Failed to parse symbols: {}", e);
             Vec::new()
         });
         all_symbols.sort_by(|a, b| b.size.cmp(&a.size));

@@ -15,6 +15,7 @@ use ratatui::{
 use crate::elf::ElfParser;
 use crate::models::{MemoryLayout, Symbol, SymbolType};
 use crate::symbol::{FuzzyMatch, FuzzyMatcher};
+use log::warn;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +47,7 @@ impl SymbolExplorer {
     pub fn new(layout: MemoryLayout, parser: &ElfParser) -> Self {
         // Extract all symbols from the ELF file
         let mut all_symbols = parser.parse_all_symbols().unwrap_or_else(|e| {
-            eprintln!("Warning: Failed to parse symbols: {}", e);
+            warn!("Warning: Failed to parse symbols: {}", e);
             Vec::new()
         });
 
