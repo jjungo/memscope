@@ -6,30 +6,30 @@ MemScope is a Rust-based CLI tool for analyzing and visualizing memory layouts o
 
 ## Features
 
-### 🖥️ Interactive TUI
+### Interactive TUI
 - **Multi-tab interface**: Memory sections, Symbols, Files, Statistics, and Region Explorer
 - **Visual memory gauges**: Real-time Flash and RAM usage with percentages
 - **Color-coded display**: Quick identification of section types
 - **Fuzzy search**: Fast symbol and file lookup
 - **Keyboard navigation**: Vim-style keybindings (j/k, ↑/↓)
 
-### 🔍 Memory Analysis
+### Memory Analysis
 - **Gap detection**: Identifies unused memory between sections
 - **Overlap detection**: Catches memory conflicts
 - **Padding analysis**: Reveals alignment waste
 - **Stack/heap monitoring**: Warns about collision risks
 - **Usage warnings**: Automatic alerts when approaching memory limits
 
-### 📊 Symbol Explorer
+### Symbol Explorer
 - **Live fuzzy search**: Find symbols instantly as you type
 - **Symbol details**: Address, size, type, binding, visibility, source file
 - **Size ranking**: See top memory consumers
 - **Neighbor analysis**: View adjacent symbols in memory
 - **Statistics dashboard**: Symbol distribution and namespace analysis
 
-### 💻 Display Modes
+### Display Modes
 - **Interactive TUI** (default): Full-featured terminal interface
-- **Text mode** (`--no-tui`): Simple output for CI/CD pipelines
+- **Text mode** (`--no-tui`)
 
 ## Installation
 
@@ -193,16 +193,6 @@ Override with `--flash-size` and `--ram-size` for exact values:
 memscope firmware.elf --flash-size 524288 --ram-size 262144
 ```
 
-## Section Color Codes
-
-- **Green** - Code (.text)
-- **Blue** - Read-only data (.rodata)
-- **Yellow** - Initialized data (.data)
-- **Magenta** - Uninitialized data (.bss)
-- **Red** - Stack
-- **Cyan** - Heap
-- **Gray** - Custom sections
-
 ## Supported Platforms
 
 - ARM Cortex-M microcontrollers (nRF52, STM32, etc.)
@@ -225,20 +215,9 @@ cargo run -- file.elf
 cargo build --release
 ```
 
-## Contributing
-
-Contributions are welcome! Areas for improvement:
-
-- ~~Additional export formats (JSON, CSV, Markdown)~~ ✅ **Done!**
-- Support for other architectures (RISC-V, x86 bare metal)
-- Linker script parsing and validation
-- Memory trend tracking across builds
-- Integration with build systems
-- SVG memory map visualization
-
 ## License
 
-See LICENSE file for details.
+TBD
 
 ## Acknowledgments
 
