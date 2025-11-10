@@ -70,6 +70,7 @@ fn detect_memory_ranges(layout: &MemoryLayout) -> (Option<u64>, Option<u64>) {
 #[derive(Parser, Debug)]
 #[command(name = "memscope")]
 #[command(about = "Interactive Memory Layout Visualizer for ARM Embedded Systems", long_about = None)]
+#[command(version)]
 struct Args {
     /// Path to the ELF binary file
     #[arg(value_name = "ELF_FILE")]
