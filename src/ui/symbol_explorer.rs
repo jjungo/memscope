@@ -34,6 +34,7 @@ pub struct SymbolExplorer {
     matcher: FuzzyMatcher,
     show_help: bool,
     view_mode: ViewMode,
+    search_mode: bool, // When true, all keys go to search input
     // File view state
     files: Vec<String>,
     file_symbols: HashMap<String, Vec<usize>>, // filename -> symbol indices
@@ -88,6 +89,7 @@ impl SymbolExplorer {
             matcher: FuzzyMatcher::new(),
             show_help: false,
             view_mode: ViewMode::Symbols,
+            search_mode: false,
             files,
             file_symbols,
             file_fuzzy_results: Vec::new(),
@@ -104,58 +106,91 @@ impl SymbolExplorer {
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc if self.search_query.is_empty() => {
-                        return Ok(());
-                    }
-                    KeyCode::Esc if !self.search_query.is_empty() => {
-                        self.search_query.clear();
-                        self.fuzzy_results.clear();
-                        self.file_fuzzy_results.clear();
-                        self.selected_index = 0;
-                        self.selected_file_index = 0;
-                        if self.view_mode == ViewMode::Symbols {
-                            self.list_state.select(Some(0));
-                        } else {
-                            self.file_list_state.select(Some(0));
+                // Handle search mode separately - all keys go to search input
+                if self.search_mode {
+                    match key.code {
+                        KeyCode::Esc => {
+                            // Exit search mode and clear query
+                            self.search_mode = false;
+                            self.search_query.clear();
+                            self.fuzzy_results.clear();
+                            self.file_fuzzy_results.clear();
+                            self.selected_index = 0;
+                            self.selected_file_index = 0;
+                            if self.view_mode == ViewMode::Symbols {
+                                self.list_state.select(Some(0));
+                            } else {
+                                self.file_list_state.select(Some(0));
+                            }
                         }
-                    }
-                    KeyCode::Tab => {
-                        // Switch between Symbol and File views
-                        self.view_mode = match self.view_mode {
-                            ViewMode::Symbols => ViewMode::Files,
-                            ViewMode::Files => ViewMode::Symbols,
-                        };
-                        self.search_query.clear();
-                        self.fuzzy_results.clear();
-                        self.file_fuzzy_results.clear();
-                    }
-                    KeyCode::Char('h') | KeyCode::Char('?') => {
-                        self.show_help = !self.show_help;
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if self.view_mode == ViewMode::Symbols {
-                            self.next_symbol();
-                        } else {
-                            self.next_file();
+                        KeyCode::Enter => {
+                            // Exit search mode but keep results
+                            self.search_mode = false;
                         }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        if self.view_mode == ViewMode::Symbols {
-                            self.previous_symbol();
-                        } else {
-                            self.previous_file();
+                        KeyCode::Backspace => {
+                            self.search_query.pop();
+                            self.update_search();
                         }
+                        KeyCode::Down => {
+                            if self.view_mode == ViewMode::Symbols {
+                                self.next_symbol();
+                            } else {
+                                self.next_file();
+                            }
+                        }
+                        KeyCode::Up => {
+                            if self.view_mode == ViewMode::Symbols {
+                                self.previous_symbol();
+                            } else {
+                                self.previous_file();
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            // All characters go to search in search mode
+                            self.search_query.push(c);
+                            self.update_search();
+                        }
+                        _ => {}
                     }
-                    KeyCode::Backspace => {
-                        self.search_query.pop();
-                        self.update_search();
+                } else {
+                    // Normal mode - navigation and commands
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            return Ok(());
+                        }
+                        KeyCode::Char('/') => {
+                            // Enter search mode
+                            self.search_mode = true;
+                        }
+                        KeyCode::Tab => {
+                            // Switch between Symbol and File views
+                            self.view_mode = match self.view_mode {
+                                ViewMode::Symbols => ViewMode::Files,
+                                ViewMode::Files => ViewMode::Symbols,
+                            };
+                            self.search_query.clear();
+                            self.fuzzy_results.clear();
+                            self.file_fuzzy_results.clear();
+                        }
+                        KeyCode::Char('h') | KeyCode::Char('?') => {
+                            self.show_help = !self.show_help;
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            if self.view_mode == ViewMode::Symbols {
+                                self.next_symbol();
+                            } else {
+                                self.next_file();
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if self.view_mode == ViewMode::Symbols {
+                                self.previous_symbol();
+                            } else {
+                                self.previous_file();
+                            }
+                        }
+                        _ => {}
                     }
-                    KeyCode::Char(c) => {
-                        self.search_query.push(c);
-                        self.update_search();
-                    }
-                    _ => {}
                 }
             }
         }
@@ -310,9 +345,29 @@ impl SymbolExplorer {
     }
 
     fn render_search_input(&self, f: &mut Frame, area: Rect) {
-        let input = Paragraph::new(format!("> {}", self.search_query))
-            .style(Style::default())
-            .block(Block::default().borders(Borders::ALL).title("Search"));
+        let (title, style, content) = if self.search_mode {
+            (
+                "Search (Esc to cancel, Enter to confirm)",
+                Style::default().fg(Color::Yellow),
+                format!("> {}█", self.search_query), // Show cursor
+            )
+        } else if !self.search_query.is_empty() {
+            (
+                "Search (/ to edit)",
+                Style::default(),
+                format!("> {}", self.search_query),
+            )
+        } else {
+            (
+                "Search (press / to search)",
+                Style::default().fg(Color::DarkGray),
+                "> ".to_string(),
+            )
+        };
+
+        let input = Paragraph::new(content)
+            .style(style)
+            .block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(input, area);
     }
 
@@ -595,7 +650,11 @@ impl SymbolExplorer {
     }
 
     fn render_footer(&self, f: &mut Frame, area: Rect) {
-        let help_text = "Type to search | Tab: Switch view | ↑/↓: Navigate | Esc: Clear/Exit | h/?: Help | q: Quit";
+        let help_text = if self.search_mode {
+            "Type to search | ↑/↓: Navigate results | Esc: Cancel | Enter: Confirm"
+        } else {
+            "/: Search | Tab: Switch view | ↑/↓/j/k: Navigate | h/?: Help | q: Quit"
+        };
         let footer = Paragraph::new(help_text)
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center)
@@ -612,9 +671,13 @@ impl SymbolExplorer {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
+            Line::from(Span::styled(
+                "Navigation Mode:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
             Line::from(vec![
-                Span::styled("Type", Style::default().fg(Color::Yellow)),
-                Span::raw("         - Fuzzy search symbols"),
+                Span::styled("/", Style::default().fg(Color::Yellow)),
+                Span::raw("            - Enter search mode"),
             ]),
             Line::from(vec![
                 Span::styled("↑/k", Style::default().fg(Color::Yellow)),
@@ -625,20 +688,37 @@ impl SymbolExplorer {
                 Span::raw("          - Navigate down"),
             ]),
             Line::from(vec![
-                Span::styled("Backspace", Style::default().fg(Color::Yellow)),
-                Span::raw("    - Delete character"),
-            ]),
-            Line::from(vec![
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw("          - Clear search / Exit"),
+                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::raw("          - Switch Symbols/Files view"),
             ]),
             Line::from(vec![
                 Span::styled("h/?", Style::default().fg(Color::Yellow)),
                 Span::raw("          - Toggle this help"),
             ]),
             Line::from(vec![
-                Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw("            - Quit"),
+                Span::styled("q/Esc", Style::default().fg(Color::Yellow)),
+                Span::raw("        - Quit"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Search Mode (after pressing /):",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(vec![
+                Span::styled("Type", Style::default().fg(Color::Yellow)),
+                Span::raw("         - Fuzzy search"),
+            ]),
+            Line::from(vec![
+                Span::styled("↑/↓", Style::default().fg(Color::Yellow)),
+                Span::raw("          - Navigate results"),
+            ]),
+            Line::from(vec![
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw("        - Confirm & exit search mode"),
+            ]),
+            Line::from(vec![
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw("          - Cancel search & clear"),
             ]),
             Line::from(""),
             Line::from(Span::styled(

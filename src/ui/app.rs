@@ -63,6 +63,7 @@ pub struct App {
     selected_symbol_index: usize,
     symbol_list_state: ListState,
     matcher: FuzzyMatcher,
+    search_mode: bool, // When true, all keys go to search input
     // File view state
     files: Vec<String>,
     file_symbols: HashMap<String, Vec<usize>>,
@@ -169,6 +170,7 @@ impl App {
             selected_symbol_index: 0,
             symbol_list_state,
             matcher: FuzzyMatcher::new(),
+            search_mode: false,
             files,
             file_symbols,
             file_fuzzy_results: Vec::new(),
@@ -264,82 +266,108 @@ impl App {
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc if self.search_query.is_empty() => {
-                        return Ok(());
-                    }
-                    KeyCode::Esc if !self.search_query.is_empty() => {
-                        self.search_query.clear();
-                        self.fuzzy_results.clear();
-                        self.file_fuzzy_results.clear();
-                    }
-                    KeyCode::Char('h') | KeyCode::Char('?') => {
-                        self.show_help = !self.show_help;
-                    }
-                    KeyCode::Tab
-                    | KeyCode::Char('1')
-                    | KeyCode::Char('2')
-                    | KeyCode::Char('3')
-                    | KeyCode::Char('4')
-                    | KeyCode::Char('5')
-                    | KeyCode::Char('6') => {
-                        self.handle_tab_switch(key.code);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => match self.current_tab {
-                        ViewTab::Memory => self.next_section(),
-                        ViewTab::Symbols => self.next_symbol(),
-                        ViewTab::Files => self.next_file(),
-                        ViewTab::Statistics => {}
-                        ViewTab::RegionExplorer => self.region_next_symbol(),
-                        ViewTab::VectorTable => self.next_vector(),
-                    },
-                    KeyCode::Up | KeyCode::Char('k') => match self.current_tab {
-                        ViewTab::Memory => self.previous_section(),
-                        ViewTab::Symbols => self.previous_symbol(),
-                        ViewTab::Files => self.previous_file(),
-                        ViewTab::Statistics => {}
-                        ViewTab::RegionExplorer => self.region_previous_symbol(),
-                        ViewTab::VectorTable => self.previous_vector(),
-                    },
-                    KeyCode::Char('z') if self.current_tab == ViewTab::RegionExplorer => {
-                        self.region_zoom_in();
-                    }
-                    KeyCode::Char('Z') if self.current_tab == ViewTab::RegionExplorer => {
-                        self.region_zoom_out();
-                    }
-                    KeyCode::PageDown => {
-                        if self.current_tab == ViewTab::RegionExplorer {
-                            self.region_scroll = self.region_scroll.saturating_add(5);
-                        } else if self.current_tab == ViewTab::VectorTable {
-                            self.vector_scroll = self.vector_scroll.saturating_add(5);
-                        } else {
-                            self.detail_scroll = self.detail_scroll.saturating_add(5);
+                // Handle search mode separately - all keys go to search input
+                if self.search_mode {
+                    match key.code {
+                        KeyCode::Esc => {
+                            // Exit search mode and clear query
+                            self.search_mode = false;
+                            self.search_query.clear();
+                            self.fuzzy_results.clear();
+                            self.file_fuzzy_results.clear();
                         }
-                    }
-                    KeyCode::PageUp => {
-                        if self.current_tab == ViewTab::RegionExplorer {
-                            self.region_scroll = self.region_scroll.saturating_sub(5);
-                        } else if self.current_tab == ViewTab::VectorTable {
-                            self.vector_scroll = self.vector_scroll.saturating_sub(5);
-                        } else {
-                            self.detail_scroll = self.detail_scroll.saturating_sub(5);
+                        KeyCode::Enter => {
+                            // Exit search mode but keep results
+                            self.search_mode = false;
                         }
+                        KeyCode::Backspace => {
+                            self.search_query.pop();
+                            self.update_search();
+                        }
+                        KeyCode::Down => match self.current_tab {
+                            ViewTab::Symbols => self.next_symbol(),
+                            ViewTab::Files => self.next_file(),
+                            _ => {}
+                        },
+                        KeyCode::Up => match self.current_tab {
+                            ViewTab::Symbols => self.previous_symbol(),
+                            ViewTab::Files => self.previous_file(),
+                            _ => {}
+                        },
+                        KeyCode::Char(c) => {
+                            // All characters go to search in search mode
+                            self.search_query.push(c);
+                            self.update_search();
+                        }
+                        _ => {}
                     }
-                    KeyCode::Backspace
-                        if self.current_tab == ViewTab::Symbols
-                            || self.current_tab == ViewTab::Files =>
-                    {
-                        self.search_query.pop();
-                        self.update_search();
+                } else {
+                    // Normal mode - navigation and commands
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            return Ok(());
+                        }
+                        KeyCode::Char('/')
+                            if self.current_tab == ViewTab::Symbols
+                                || self.current_tab == ViewTab::Files =>
+                        {
+                            // Enter search mode
+                            self.search_mode = true;
+                        }
+                        KeyCode::Char('h') | KeyCode::Char('?') => {
+                            self.show_help = !self.show_help;
+                        }
+                        KeyCode::Tab
+                        | KeyCode::Char('1')
+                        | KeyCode::Char('2')
+                        | KeyCode::Char('3')
+                        | KeyCode::Char('4')
+                        | KeyCode::Char('5')
+                        | KeyCode::Char('6') => {
+                            self.handle_tab_switch(key.code);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => match self.current_tab {
+                            ViewTab::Memory => self.next_section(),
+                            ViewTab::Symbols => self.next_symbol(),
+                            ViewTab::Files => self.next_file(),
+                            ViewTab::Statistics => {}
+                            ViewTab::RegionExplorer => self.region_next_symbol(),
+                            ViewTab::VectorTable => self.next_vector(),
+                        },
+                        KeyCode::Up | KeyCode::Char('k') => match self.current_tab {
+                            ViewTab::Memory => self.previous_section(),
+                            ViewTab::Symbols => self.previous_symbol(),
+                            ViewTab::Files => self.previous_file(),
+                            ViewTab::Statistics => {}
+                            ViewTab::RegionExplorer => self.region_previous_symbol(),
+                            ViewTab::VectorTable => self.previous_vector(),
+                        },
+                        KeyCode::Char('z') if self.current_tab == ViewTab::RegionExplorer => {
+                            self.region_zoom_in();
+                        }
+                        KeyCode::Char('Z') if self.current_tab == ViewTab::RegionExplorer => {
+                            self.region_zoom_out();
+                        }
+                        KeyCode::PageDown => {
+                            if self.current_tab == ViewTab::RegionExplorer {
+                                self.region_scroll = self.region_scroll.saturating_add(5);
+                            } else if self.current_tab == ViewTab::VectorTable {
+                                self.vector_scroll = self.vector_scroll.saturating_add(5);
+                            } else {
+                                self.detail_scroll = self.detail_scroll.saturating_add(5);
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            if self.current_tab == ViewTab::RegionExplorer {
+                                self.region_scroll = self.region_scroll.saturating_sub(5);
+                            } else if self.current_tab == ViewTab::VectorTable {
+                                self.vector_scroll = self.vector_scroll.saturating_sub(5);
+                            } else {
+                                self.detail_scroll = self.detail_scroll.saturating_sub(5);
+                            }
+                        }
+                        _ => {}
                     }
-                    KeyCode::Char(c)
-                        if self.current_tab == ViewTab::Symbols
-                            || self.current_tab == ViewTab::Files =>
-                    {
-                        self.search_query.push(c);
-                        self.update_search();
-                    }
-                    _ => {}
                 }
             }
         }
@@ -935,9 +963,29 @@ impl App {
     }
 
     fn render_search_input(&self, f: &mut Frame, area: Rect) {
-        let input = Paragraph::new(format!("> {}", self.search_query))
-            .style(Style::default())
-            .block(Block::default().borders(Borders::ALL).title("Search"));
+        let (title, style, content) = if self.search_mode {
+            (
+                "Search (Esc to cancel, Enter to confirm)",
+                Style::default().fg(Color::Yellow),
+                format!("> {}█", self.search_query), // Show cursor
+            )
+        } else if !self.search_query.is_empty() {
+            (
+                "Search (/ to edit)",
+                Style::default(),
+                format!("> {}", self.search_query),
+            )
+        } else {
+            (
+                "Search (press / to search)",
+                Style::default().fg(Color::DarkGray),
+                "> ".to_string(),
+            )
+        };
+
+        let input = Paragraph::new(content)
+            .style(style)
+            .block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(input, area);
     }
 
@@ -2176,13 +2224,15 @@ impl App {
     fn render_footer(&self, f: &mut Frame, area: Rect) {
         let help_text = if self.show_help {
             "Press h or ? to close help"
+        } else if self.search_mode {
+            "Type to search | ↑/↓: Navigate results | Esc: Cancel | Enter: Confirm"
         } else {
             match self.current_tab {
                 ViewTab::Memory => {
                     "1-6 or Tab: Switch tabs | ↑/↓: Navigate | PgUp/PgDn: Scroll | h/?: Help | q/Esc: Quit"
                 }
                 ViewTab::Symbols | ViewTab::Files => {
-                    "1-6 or Tab: Switch tabs | Type to search | ↑/↓: Navigate | Esc: Clear | h/?: Help | q: Quit"
+                    "1-6 or Tab: Switch tabs | /: Search | ↑/↓/j/k: Navigate | h/?: Help | q/Esc: Quit"
                 }
                 ViewTab::Statistics => "1-6 or Tab: Switch tabs | h/?: Help | q/Esc: Quit",
                 ViewTab::RegionExplorer => {
@@ -2210,25 +2260,25 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
+            Line::from(Span::styled(
+                "Navigation:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(vec![
+                Span::styled("1-6/Tab", Style::default().fg(Color::Yellow)),
+                Span::raw("    - Switch between tabs"),
+            ]),
             Line::from(vec![
                 Span::styled("↑/k", Style::default().fg(Color::Yellow)),
-                Span::raw("        - Move up in section list"),
+                Span::raw("        - Move up in list"),
             ]),
             Line::from(vec![
                 Span::styled("↓/j", Style::default().fg(Color::Yellow)),
-                Span::raw("        - Move down in section list"),
+                Span::raw("        - Move down in list"),
             ]),
             Line::from(vec![
-                Span::styled("PgUp", Style::default().fg(Color::Yellow)),
-                Span::raw("       - Scroll details up"),
-            ]),
-            Line::from(vec![
-                Span::styled("PgDn", Style::default().fg(Color::Yellow)),
-                Span::raw("       - Scroll details down"),
-            ]),
-            Line::from(vec![
-                Span::styled("s", Style::default().fg(Color::Yellow)),
-                Span::raw("          - Open Symbol Explorer"),
+                Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+                Span::raw("  - Scroll details"),
             ]),
             Line::from(vec![
                 Span::styled("h/?", Style::default().fg(Color::Yellow)),
@@ -2237,6 +2287,27 @@ impl App {
             Line::from(vec![
                 Span::styled("q/Esc", Style::default().fg(Color::Yellow)),
                 Span::raw("      - Quit application"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Search (Symbols/Files tabs):",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(vec![
+                Span::styled("/", Style::default().fg(Color::Yellow)),
+                Span::raw("          - Enter search mode"),
+            ]),
+            Line::from(vec![
+                Span::styled("Type", Style::default().fg(Color::Yellow)),
+                Span::raw("       - Fuzzy search"),
+            ]),
+            Line::from(vec![
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw("      - Confirm & exit search"),
+            ]),
+            Line::from(vec![
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw("        - Cancel & clear search"),
             ]),
             Line::from(""),
             Line::from(Span::styled(
