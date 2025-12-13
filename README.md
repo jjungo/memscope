@@ -98,10 +98,11 @@ memscope firmware.elf --export md  # alias, to stdout
 - `q/Esc` - Quit
 
 #### Symbol/Files View
-- Type to search (fuzzy matching)
+- `ctrl+/` - To enter in search mode
+- `Enter` - To validate the search entry
 - `↑/↓` or `j/k` - Navigate results
 - `Backspace` - Delete character
-- `Esc` - Clear search
+- `Esc` - Clear search and exit search mode
 
 #### Region Explorer
 - `↑/↓` or `j/k` - Navigate symbols
