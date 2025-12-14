@@ -70,45 +70,31 @@ impl ElfParser {
         let elf = Elf::parse(&self.bytes).context("Failed to parse ELF file")?;
 
         // First pass: build a map of symbol index -> source file
+        // In ELF, FILE symbols declare the source file for symbols that FOLLOW them
         let mut file_map: std::collections::HashMap<usize, String> =
             std::collections::HashMap::new();
         let mut current_source_file: Option<String> = None;
-        let mut last_file_index = 0;
-        let mut saw_empty_file = false;
 
         for (idx, sym) in elf.syms.iter().enumerate() {
             let st_type = goblin::elf::sym::st_type(sym.st_info);
 
             if st_type == 4 {
-                // FILE symbol
+                // FILE symbol - this declares the source file for following symbols
                 if let Some(name) = elf.strtab.get_at(sym.st_name) {
                     if !name.is_empty() {
                         // Extract just the filename, not the full path
                         let filename = name.rsplit('/').next().unwrap_or(name).to_string();
-
-                        // Associate symbols since the last FILE marker with this file
-                        // But only if we haven't seen an empty FILE symbol
-                        for i in last_file_index..idx {
-                            if !file_map.contains_key(&i) && !saw_empty_file {
-                                file_map.insert(i, filename.clone());
-                            }
-                        }
-
                         current_source_file = Some(filename);
-                        last_file_index = idx;
-                        saw_empty_file = false;
                     } else {
-                        // Empty FILE symbol - marks uncertain boundary
-                        saw_empty_file = true;
+                        // Empty FILE symbol - clear current source file context
+                        current_source_file = None;
                     }
                 }
-            }
-        }
-
-        // Associate remaining symbols with the last file only if we didn't see empty FILE
-        if !saw_empty_file && let Some(ref file) = current_source_file {
-            for i in last_file_index..elf.syms.len() {
-                file_map.entry(i).or_insert_with(|| file.clone());
+            } else {
+                // Non-FILE symbol - associate with current source file
+                if let Some(ref file) = current_source_file {
+                    file_map.insert(idx, file.clone());
+                }
             }
         }
 
