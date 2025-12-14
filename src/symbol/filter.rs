@@ -103,6 +103,7 @@ mod tests {
             visibility: SymbolVisibility::Default,
             section_index: 0,
             source_file: None,
+            section_name: None,
         }
     }
 

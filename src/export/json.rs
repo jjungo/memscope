@@ -273,6 +273,7 @@ mod tests {
                 visibility: SymbolVisibility::Default,
                 section_index: 1,
                 source_file: Some("main.c".to_string()),
+                section_name: Some(".text".to_string()),
             },
             Symbol {
                 name: "buffer".to_string(),
@@ -283,6 +284,7 @@ mod tests {
                 visibility: SymbolVisibility::Default,
                 section_index: 2,
                 source_file: Some("data.c".to_string()),
+                section_name: Some(".bss".to_string()),
             },
         ]
     }

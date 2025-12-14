@@ -484,6 +484,17 @@ impl SymbolExplorer {
                 source_file_span,
             ]));
 
+            // Add section name
+            let section_span = if let Some(ref section_name) = sym.section_name {
+                Span::styled(section_name, Style::default().fg(Color::Green))
+            } else {
+                Span::styled("UNKNOWN", Style::default().fg(Color::Rgb(255, 165, 0)))
+            };
+            lines.push(Line::from(vec![
+                Span::styled("Section: ", Style::default().add_modifier(Modifier::BOLD)),
+                section_span,
+            ]));
+
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("Address: ", Style::default().add_modifier(Modifier::BOLD)),

@@ -121,6 +121,15 @@ impl ElfParser {
 
                 let st_bind = goblin::elf::sym::st_bind(sym.st_info);
 
+                // Get section name from section header index
+                let section_name = if sym.st_shndx < elf.section_headers.len() {
+                    elf.shdr_strtab
+                        .get_at(elf.section_headers[sym.st_shndx].sh_name)
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                };
+
                 symbols.push(Symbol {
                     name: name.to_string(),
                     address: sym.st_value,
@@ -130,6 +139,7 @@ impl ElfParser {
                     visibility: self.classify_symbol_visibility(sym.st_other),
                     section_index: idx,
                     source_file: file_map.get(&idx).cloned(),
+                    section_name,
                 });
             }
         }
@@ -201,6 +211,12 @@ impl ElfParser {
     ) -> Result<Vec<Symbol>> {
         let mut symbols = Vec::new();
 
+        // Get the section name
+        let section_name = elf
+            .shdr_strtab
+            .get_at(section_header.sh_name)
+            .map(|s| s.to_string());
+
         for (idx, sym) in elf.syms.iter().enumerate() {
             // Check if symbol belongs to this section
             if sym.st_shndx == section_header.sh_name
@@ -219,6 +235,7 @@ impl ElfParser {
                     visibility: self.classify_symbol_visibility(sym.st_other),
                     section_index: idx,
                     source_file: None, // Not tracking source files for section symbols
+                    section_name: section_name.clone(),
                 });
             }
         }

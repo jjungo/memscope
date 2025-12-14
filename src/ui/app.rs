@@ -1238,6 +1238,17 @@ impl App {
                 source_file_span,
             ]));
 
+            // Add section name
+            let section_span = if let Some(ref section_name) = sym.section_name {
+                Span::styled(section_name, Style::default().fg(Color::Green))
+            } else {
+                Span::styled("UNKNOWN", Style::default().fg(Color::Rgb(255, 165, 0)))
+            };
+            lines.push(Line::from(vec![
+                Span::styled("Section: ", Style::default().add_modifier(Modifier::BOLD)),
+                section_span,
+            ]));
+
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("Address: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -2195,19 +2206,11 @@ impl App {
         ];
 
         // Show which section this symbol belongs to
-        if let Some(section) = self
-            .layout
-            .sections
-            .iter()
-            .find(|s| symbol.address >= s.address && symbol.address < (s.address + s.size))
-        {
+        if let Some(ref section_name) = symbol.section_name {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("Section: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    &section.name,
-                    Style::default().fg(theme::section_color(&section.section_type)),
-                ),
+                Span::styled(section_name, Style::default().fg(Color::Green)),
             ]));
         }
 

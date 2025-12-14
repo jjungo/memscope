@@ -126,6 +126,8 @@ pub struct Symbol {
     pub section_index: usize,
     /// Source file this symbol originated from (if available)
     pub source_file: Option<String>,
+    /// Section name this symbol belongs to (e.g., ".text", ".bss", ".data")
+    pub section_name: Option<String>,
 }
 
 /// ELF symbol type classification
