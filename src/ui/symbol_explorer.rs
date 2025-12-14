@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::elf::ElfParser;
-use crate::models::{MemoryLayout, Symbol, SymbolType};
+use crate::models::{MemoryLayout, Symbol, SymbolBinding, SymbolType};
 use crate::symbol::{FuzzyMatch, FuzzyMatcher};
 use log::warn;
 use std::collections::HashMap;
@@ -402,7 +402,7 @@ impl SymbolExplorer {
         let items: Vec<ListItem> = symbols_to_display
             .iter()
             .map(|symbol| {
-                let color = symbol_type_color(&symbol.symbol_type);
+                let color = symbol_type_color(symbol);
                 let size_str = format_size_human(symbol.size);
                 let content = format!(
                     "{:<30} {:>10}  {:?}",
@@ -745,6 +745,10 @@ impl SymbolExplorer {
                 Span::raw("- Objects/Variables"),
             ]),
             Line::from(vec![
+                Span::styled("Orange  ", Style::default().fg(Color::Rgb(200, 100, 0))),
+                Span::raw("- Global symbols (except .text)"),
+            ]),
+            Line::from(vec![
                 Span::styled("Gray    ", Style::default().fg(Color::Gray)),
                 Span::raw("- Other types"),
             ]),
@@ -768,8 +772,17 @@ impl SymbolExplorer {
     }
 }
 
-fn symbol_type_color(symbol_type: &SymbolType) -> Color {
-    match symbol_type {
+fn symbol_type_color(symbol: &Symbol) -> Color {
+    // Highlight global symbols (except those in .text section) in orange
+    if symbol.binding == SymbolBinding::Global
+        && let Some(ref section_name) = symbol.section_name
+        && section_name != ".text"
+    {
+        return Color::Rgb(200, 100, 0); // Dark orange
+    }
+
+    // Default colors based on symbol type
+    match symbol.symbol_type {
         SymbolType::Function => Color::Green,
         SymbolType::Object => Color::Yellow,
         SymbolType::File => Color::Magenta,

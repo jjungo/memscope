@@ -12,7 +12,7 @@ use ratatui::{
 use super::theme;
 use crate::elf::ElfParser;
 use crate::models::{
-    AnalysisResult, MemoryLayout, Symbol, SymbolType, VectorTable, VectorTableStats,
+    AnalysisResult, MemoryLayout, Symbol, SymbolBinding, SymbolType, VectorTable, VectorTableStats,
 };
 use crate::symbol::{FuzzyMatch, FuzzyMatcher};
 use crate::utils::{format_size_human, truncate};
@@ -1156,7 +1156,7 @@ impl App {
         let items: Vec<ListItem> = symbols_to_display
             .iter()
             .map(|symbol| {
-                let color = symbol_type_color(&symbol.symbol_type);
+                let color = symbol_type_color(symbol);
                 let size_str = format_size_human(symbol.size);
                 let content = format!(
                     "{:<30} {:>10}  {:?}",
@@ -1969,7 +1969,7 @@ impl App {
 
                 for sym in display_symbols.iter().take(max_symbols) {
                     let is_selected = selected_symbol_name == Some(sym.name.as_str());
-                    let sym_color = symbol_type_color(&sym.symbol_type);
+                    let sym_color = symbol_type_color(sym);
 
                     lines.push(Line::from(vec![
                         Span::raw(if is_selected { "  ►►" } else { "    " }),
@@ -2100,7 +2100,7 @@ impl App {
 
                 for sym in display_symbols.iter().take(max_symbols) {
                     let is_selected = selected_symbol_name == Some(sym.name.as_str());
-                    let sym_color = symbol_type_color(&sym.symbol_type);
+                    let sym_color = symbol_type_color(sym);
 
                     lines.push(Line::from(vec![
                         Span::raw(if is_selected { "  ►►" } else { "    " }),
@@ -2637,8 +2637,17 @@ impl App {
     }
 }
 
-fn symbol_type_color(symbol_type: &SymbolType) -> Color {
-    match symbol_type {
+fn symbol_type_color(symbol: &Symbol) -> Color {
+    // Highlight global symbols (except those in .text section) in orange
+    if symbol.binding == SymbolBinding::Global
+        && let Some(ref section_name) = symbol.section_name
+        && section_name != ".text"
+    {
+        return Color::Rgb(200, 100, 0); // Dark orange
+    }
+
+    // Default colors based on symbol type
+    match symbol.symbol_type {
         SymbolType::Function => Color::Green,
         SymbolType::Object => Color::Yellow,
         SymbolType::File => Color::Magenta,
