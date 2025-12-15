@@ -3,6 +3,7 @@
 //! Analyzes ELF binaries from `arm-none-eabi-gcc` to show Flash/RAM usage,
 //! detect memory issues, and export reports in multiple formats.
 
+mod diff;
 mod elf;
 mod export;
 mod linker;
@@ -12,7 +13,7 @@ mod ui;
 mod utils;
 mod vector;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use colored::*;
 use crossterm::{
@@ -72,45 +73,66 @@ fn detect_memory_ranges(layout: &MemoryLayout) -> (Option<u64>, Option<u64>) {
 #[command(about = "Interactive Memory Layout Visualizer for ARM Embedded Systems", long_about = None)]
 #[command(version)]
 struct Args {
-    /// Path to the ELF binary file
-    #[arg(value_name = "ELF_FILE")]
-    elf_file: PathBuf,
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Path to the ELF binary file (for backward compatibility)
+    #[arg(value_name = "ELF_FILE", global = true)]
+    elf_file: Option<PathBuf>,
 
     /// Show detailed symbol information
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     detailed: bool,
 
     /// Display summary and exit (non-interactive, no TUI)
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_tui: bool,
 
     /// Total Flash size in bytes (e.g., 524288 for 512KB)
-    #[arg(long, value_name = "BYTES")]
+    #[arg(long, value_name = "BYTES", global = true)]
     flash_size: Option<u64>,
 
     /// Total RAM size in bytes (e.g., 262144 for 256KB)
-    #[arg(long, value_name = "BYTES")]
+    #[arg(long, value_name = "BYTES", global = true)]
     ram_size: Option<u64>,
 
     /// Show top N symbols by size and exit (non-interactive)
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", global = true)]
     top: Option<usize>,
 
     /// Export format: json, csv, csv:sections, csv:analysis, markdown, md
-    #[arg(long, value_name = "FORMAT")]
+    #[arg(long, value_name = "FORMAT", global = true)]
     export: Option<String>,
 
     /// Output file path for export (stdout if not specified)
-    #[arg(long, value_name = "PATH", requires = "export")]
+    #[arg(long, value_name = "PATH", requires = "export", global = true)]
     output: Option<std::path::PathBuf>,
 
     /// Path to linker script for accurate memory region definitions (optional)
-    #[arg(long, value_name = "LD_FILE")]
+    #[arg(long, value_name = "LD_FILE", global = true)]
     linker_script: Option<PathBuf>,
 
     /// Quiet mode (no output)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     quiet: bool,
+}
+
+#[derive(Parser, Debug)]
+enum Command {
+    /// Compare two ELF binaries and show memory differences
+    Diff {
+        /// First ELF binary (v1)
+        #[arg(value_name = "V1_ELF")]
+        v1_elf: PathBuf,
+
+        /// Second ELF binary (v2)
+        #[arg(value_name = "V2_ELF")]
+        v2_elf: PathBuf,
+
+        /// Linker script(s): single file for both, or two files (v1.ld v2.ld)
+        #[arg(long, value_name = "LD_FILE")]
+        linker_script: Vec<PathBuf>,
+    },
 }
 
 fn log_formatter(buf: &mut env_logger::fmt::Formatter, record: &log::Record) -> io::Result<()> {
@@ -140,6 +162,31 @@ fn main() -> Result<()> {
         .filter_level(log_level)
         .format(log_formatter)
         .init();
+
+    // Handle subcommands
+    match args.command {
+        Some(Command::Diff {
+            ref v1_elf,
+            ref v2_elf,
+            ref linker_script,
+        }) => {
+            return handle_diff_command(
+                v1_elf.clone(),
+                v2_elf.clone(),
+                linker_script.clone(),
+                &args,
+            );
+        }
+        None => {
+            // Fall through to legacy single-file analysis
+            if args.elf_file.is_none() {
+                eprintln!("{}", "Error: ELF_FILE argument is required".red());
+                eprintln!("Usage: memscope <ELF_FILE> [OPTIONS]");
+                eprintln!("       memscope diff <V1_ELF> <V2_ELF> [OPTIONS]");
+                std::process::exit(1);
+            }
+        }
+    }
 
     info!(
         "{}",
@@ -196,9 +243,10 @@ fn main() -> Result<()> {
         None
     };
 
-    // Parse ELF file
-    info!("Parsing ELF file: {}", args.elf_file.display());
-    let parser = ElfParser::new(&args.elf_file)?;
+    // Parse ELF file (unwrap is safe because we checked above)
+    let elf_file = args.elf_file.as_ref().unwrap();
+    info!("Parsing ELF file: {}", elf_file.display());
+    let parser = ElfParser::new(elf_file)?;
 
     // Handle --top option (early exit, but need layout for RAM info)
     if let Some(n) = args.top {
@@ -335,19 +383,11 @@ fn main() -> Result<()> {
 
         if let Some(output_path) = &args.output {
             // Export to file
-            export::export_to_file(
-                &layout,
-                &analysis,
-                &symbols,
-                format,
-                &args.elf_file,
-                output_path,
-            )?;
+            export::export_to_file(&layout, &analysis, &symbols, format, elf_file, output_path)?;
             info!("✓ Exported to: {}", output_path.display());
         } else {
             // Export to stdout
-            let output =
-                export::export_to_string(&layout, &analysis, &symbols, format, &args.elf_file)?;
+            let output = export::export_to_string(&layout, &analysis, &symbols, format, elf_file)?;
             println!("{}", output);
         }
 
@@ -467,6 +507,94 @@ fn display_top_symbols(parser: &ElfParser, n: usize, ram_size: Option<u64>) -> R
     }
 
     info!("");
+    Ok(())
+}
+
+/// Handle the diff subcommand
+fn handle_diff_command(
+    v1_elf: PathBuf,
+    v2_elf: PathBuf,
+    linker_scripts: Vec<PathBuf>,
+    args: &Args,
+) -> Result<()> {
+    use diff::{DiffAnalyzer, display_diff};
+
+    // Parse linker scripts
+    let (v1_linker, v2_linker) = match linker_scripts.len() {
+        0 => (None, None),
+        1 => {
+            // Single linker script - use for both
+            let regions = linker::parse_linker_script(&linker_scripts[0])?;
+            (Some(regions.clone()), Some(regions))
+        }
+        2 => {
+            // Two linker scripts
+            let v1_regions = linker::parse_linker_script(&linker_scripts[0])?;
+            let v2_regions = linker::parse_linker_script(&linker_scripts[1])?;
+            (Some(v1_regions), Some(v2_regions))
+        }
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Too many linker scripts provided. Expected 0, 1, or 2, got {}",
+                linker_scripts.len()
+            ));
+        }
+    };
+
+    // Parse v1 ELF
+    let v1_parser = ElfParser::new(&v1_elf)
+        .with_context(|| format!("Failed to read first ELF file: {}", v1_elf.display()))?;
+    let mut v1_layout = v1_parser
+        .parse(v1_linker.as_deref())
+        .with_context(|| format!("Failed to parse first ELF file: {}", v1_elf.display()))?;
+    v1_layout.flash_size = args.flash_size;
+    v1_layout.ram_size = args.ram_size;
+
+    // Auto-detect memory sizes if not provided
+    if v1_layout.flash_size.is_none() || v1_layout.ram_size.is_none() {
+        let detected = detect_memory_ranges(&v1_layout);
+        if v1_layout.flash_size.is_none() {
+            v1_layout.flash_size = detected.0;
+        }
+        if v1_layout.ram_size.is_none() {
+            v1_layout.ram_size = detected.1;
+        }
+    }
+
+    // Parse v2 ELF
+    let v2_parser = ElfParser::new(&v2_elf)
+        .with_context(|| format!("Failed to read second ELF file: {}", v2_elf.display()))?;
+    let mut v2_layout = v2_parser
+        .parse(v2_linker.as_deref())
+        .with_context(|| format!("Failed to parse second ELF file: {}", v2_elf.display()))?;
+    v2_layout.flash_size = args.flash_size;
+    v2_layout.ram_size = args.ram_size;
+
+    // Auto-detect memory sizes if not provided
+    if v2_layout.flash_size.is_none() || v2_layout.ram_size.is_none() {
+        let detected = detect_memory_ranges(&v2_layout);
+        if v2_layout.flash_size.is_none() {
+            v2_layout.flash_size = detected.0;
+        }
+        if v2_layout.ram_size.is_none() {
+            v2_layout.ram_size = detected.1;
+        }
+    }
+
+    // Compute diff
+    let analyzer = DiffAnalyzer::new();
+    let diff = analyzer.diff(
+        &v1_layout,
+        &v2_layout,
+        v1_elf.to_str().unwrap_or("v1.elf"),
+        v2_elf.to_str().unwrap_or("v2.elf"),
+        v1_linker.as_deref(),
+        v2_linker.as_deref(),
+    );
+
+    // Display diff
+    display_diff(&diff);
+
     Ok(())
 }
 

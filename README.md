@@ -19,6 +19,7 @@ MemScope is a Rust-based CLI tool for analyzing and visualizing memory layouts o
 - **Padding analysis**: Reveals alignment waste
 - **Stack/heap monitoring**: Warns about collision risks
 - **Usage warnings**: Automatic alerts when approaching memory limits
+- **Binary diffing**: Compare two ELF binaries to track memory growth and symbol changes
 
 ### Symbol Explorer
 - **Live fuzzy search**: Find symbols instantly as you type
@@ -59,6 +60,37 @@ memscope firmware.elf --flash-size 524288 --ram-size 262144
 # Show top N symbols by size
 memscope firmware.elf --top 20
 ```
+
+### Memory Diff
+
+Compare two ELF binaries to track memory changes between builds:
+
+```bash
+# Basic diff
+memscope diff firmware-v1.elf firmware-v2.elf
+
+# With linker script (used for both binaries)
+memscope diff firmware-v1.elf firmware-v2.elf --linker-script STM32F4.ld
+
+# With different linker scripts
+memscope diff firmware-v1.elf firmware-v2.elf --linker-script v1.ld v2.ld
+
+# With memory size overrides
+memscope diff v1.elf v2.elf --flash-size 524288 --ram-size 262144
+```
+
+**What gets compared:**
+- **Section sizes**: Shows delta and percentage change for all sections (.text, .data, .rodata, .bss, etc.)
+- **New/removed sections**: Highlights sections added or removed between versions
+- **Symbol changes**: Detailed analysis of new, removed, and modified symbols in .data, .rodata, and .bss sections
+- **Flash/RAM totals**: Overall memory usage change with percentage
+- **Linker script regions** (optional): Compares memory region definitions if linker scripts are provided
+
+**Use cases:**
+- Track firmware size growth over time
+- Identify which symbols are causing memory increases
+- Detect unexpected memory changes in CI/CD pipelines
+- Validate optimizations and refactoring efforts
 
 ### Export Formats
 
@@ -152,7 +184,10 @@ jobs:
 ### Track Memory Trends
 
 ```bash
-# Compare two builds
+# Compare two builds with diff command (recommended)
+memscope diff firmware-v1.elf firmware-v2.elf
+
+# Or use JSON exports for custom analysis
 memscope firmware-v1.elf --export json --output v1.json
 memscope firmware-v2.elf --export json --output v2.json
 

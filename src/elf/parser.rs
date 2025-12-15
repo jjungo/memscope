@@ -47,8 +47,8 @@ impl ElfParser {
         let mut layout = MemoryLayout::new();
 
         // Parse all sections
-        for section_header in &elf.section_headers {
-            if let Some(section) = self.parse_section(&elf, section_header)? {
+        for (section_index, section_header) in elf.section_headers.iter().enumerate() {
+            if let Some(section) = self.parse_section(&elf, section_header, section_index)? {
                 layout.sections.push(section);
             }
         }
@@ -147,7 +147,12 @@ impl ElfParser {
         Ok(symbols)
     }
 
-    fn parse_section(&self, elf: &Elf, header: &SectionHeader) -> Result<Option<MemorySection>> {
+    fn parse_section(
+        &self,
+        elf: &Elf,
+        header: &SectionHeader,
+        section_index: usize,
+    ) -> Result<Option<MemorySection>> {
         use goblin::elf::section_header::SHF_ALLOC;
 
         let name = elf
@@ -166,7 +171,7 @@ impl ElfParser {
 
         let section_type = self.classify_section(&name, header);
 
-        let symbols = self.extract_symbols_for_section(elf, header)?;
+        let symbols = self.extract_symbols_for_section(elf, header, section_index)?;
 
         Ok(Some(MemorySection {
             name,
@@ -208,6 +213,7 @@ impl ElfParser {
         &self,
         elf: &Elf,
         section_header: &SectionHeader,
+        section_index: usize,
     ) -> Result<Vec<Symbol>> {
         let mut symbols = Vec::new();
 
@@ -219,7 +225,7 @@ impl ElfParser {
 
         for (idx, sym) in elf.syms.iter().enumerate() {
             // Check if symbol belongs to this section
-            if sym.st_shndx == section_header.sh_name
+            if sym.st_shndx == section_index
                 && sym.st_size > 0
                 && let Some(name) = elf.strtab.get_at(sym.st_name)
             {
