@@ -262,3 +262,6 @@ Built with:
 - [goblin](https://github.com/m4b/goblin) - ELF parsing
 - [fuzzy-matcher](https://github.com/lotabout/fuzzy-matcher) - Fuzzy searching
 - [crossterm](https://github.com/crossterm-rs/crossterm) - Terminal manipulation
+
+### Copyright
+Copyright (C) 2025-2026 Joël Jungo - All Rights Reserved
