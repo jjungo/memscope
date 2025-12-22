@@ -1,6 +1,6 @@
 [package]
 name = "memscope"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Interactive memory layout visualizer for ARM embedded ELF binaries"
 repository = "https://github.com/jjungo/memscope"
